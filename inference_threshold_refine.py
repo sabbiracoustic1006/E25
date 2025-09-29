@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-
-import difflib
 import pandas as pd
 import numpy as np
 import torch
@@ -98,69 +97,33 @@ def compute_threshold_statistics(
     return per_class, threshold_bins
 
 
-def resolve_word_labels(tokens, labels, offset_mapping):
-    word_preds = []
-    cur_labels: List[str] = []
-    cur_offsets: List[Tuple[int, int]] = []
-
-    for token, label, (start, end) in zip(tokens, labels, offset_mapping):
-        if token in {"[CLS]", "[SEP]"} or (start == 0 and end == 0):
-            continue
-        is_new_word = token.startswith("▁")
-        if is_new_word and cur_offsets:
-            final_label = next((lab for lab in cur_labels if lab != "O"), "O")
-            if "B-O" in cur_labels or "I-O" in cur_labels:
-                final_label = "B-O"
-            word_preds.append(
-                {
-                    "entity": final_label,
-                    "start": cur_offsets[0][0],
-                    "end": cur_offsets[-1][1],
-                }
-            )
-            cur_labels = []
-            cur_offsets = []
-
-        cur_labels.append(label)
-        cur_offsets.append((start, end))
-
-    if cur_offsets:
-        final_label = next((lab for lab in cur_labels if lab != "O"), "O")
-        if "B-O" in cur_labels or "I-O" in cur_labels:
-            final_label = "B-O"
-        word_preds.append(
-            {
-                "entity": final_label,
-                "start": cur_offsets[0][0],
-                "end": cur_offsets[-1][1],
-            }
-        )
-
-    return word_preds
-
-
-def merge_spans(preds: List[Dict[str, object]]) -> List[Dict[str, object]]:
-    merged: List[Dict[str, object]] = []
-    current = None
-    for token in preds:
-        label = token["entity"]
+def extract_spans(
+    seq: List[str],
+    positions: List[int],
+    offsets: List[Tuple[int, int]],
+    text: str,
+) -> List[Tuple[str, str]]:
+    """Extract spans from token-level predictions (matches training logic)."""
+    spans: List[Tuple[str, str]] = []
+    idx = 0
+    while idx < len(seq):
+        label = seq[idx]
         if label.startswith("B-"):
-            if current:
-                merged.append(current)
-            current = {
-                "aspect_name": label[2:],
-                "start": token["start"],
-                "end": token["end"],
-            }
-        elif label.startswith("I-") and current and label[2:] == current["aspect_name"]:
-            current["end"] = token["end"]
+            aspect = label[2:]
+            start_pos = positions[idx]
+            end_pos = start_pos
+            idx += 1
+            while idx < len(seq) and seq[idx] == f"I-{aspect}":
+                end_pos = positions[idx]
+                idx += 1
+
+            start_char, _ = offsets[start_pos]
+            _, end_char = offsets[end_pos]
+            span_text = text[start_char:end_char].strip()
+            spans.append((aspect, span_text))
         else:
-            if current:
-                merged.append(current)
-                current = None
-    if current:
-        merged.append(current)
-    return merged
+            idx += 1
+    return spans
 
 
 def apply_thresholds(
@@ -184,6 +147,7 @@ def apply_thresholds(
 
 
 def build_samples(valid_df, model, tokenizer, device) -> List[Dict[str, object]]:
+    """Build samples with aligned token-level labels (matches training logic)."""
     samples: List[Dict[str, object]] = []
     for rid in tqdm(valid_df["Record Number"].unique(), desc="Collecting logits"):
         sample = valid_df[valid_df["Record Number"] == rid]
@@ -198,13 +162,31 @@ def build_samples(valid_df, model, tokenizer, device) -> List[Dict[str, object]]
             padding=True,
             truncation=True,
         )
+        offsets = encoded["offset_mapping"][0].tolist()
+
+        # Create token-level labels aligned to gold spans (same as training)
+        labels = [-100] * len(offsets)
+        for cat, asp, val in gold:
+            val_str = str(val)
+            for match in re.finditer(re.escape(val_str), text):
+                start_char, end_char = match.span()
+                b_assigned = False
+                for tidx, (start, end) in enumerate(offsets):
+                    if start >= end_char:
+                        break
+                    if end <= start_char:
+                        continue
+                    if not b_assigned:
+                        labels[tidx] = label2id[f"B-{asp}"]
+                        b_assigned = True
+                    else:
+                        labels[tidx] = label2id[f"I-{asp}"]
+
         encoded = {k: v.to(device) for k, v in encoded.items()}
-        offsets = encoded.pop("offset_mapping").cpu()[0].tolist()
+        encoded.pop("offset_mapping")
 
         with torch.no_grad():
             logits = model(**encoded).logits.softmax(dim=-1).cpu()[0]
-
-        tokens = tokenizer.convert_ids_to_tokens(encoded["input_ids"].cpu()[0], skip_special_tokens=False)
 
         samples.append(
             {
@@ -213,7 +195,7 @@ def build_samples(valid_df, model, tokenizer, device) -> List[Dict[str, object]]
                 "text": text,
                 "gold": gold,
                 "probs": logits.numpy(),
-                "tokens": tokens,
+                "labels": labels,
                 "offsets": offsets,
             }
         )
@@ -225,6 +207,7 @@ def evaluate_thresholds(
     thresholds: Dict[int, float],
     o_id: int,
 ) -> Tuple[float, Dict[str, float]]:
+    """Evaluate predictions using training-aligned token filtering."""
     all_targets: List[Dict[str, str]] = []
     all_preds: List[Dict[str, str]] = []
 
@@ -233,47 +216,41 @@ def evaluate_thresholds(
         base_preds = probs.argmax(dim=-1)
         filtered = apply_thresholds(probs, base_preds, thresholds, o_id).squeeze(0).numpy()
 
-        pred_labels = [id2label[int(idx)] for idx in filtered]
-        word_preds = resolve_word_labels(sample["tokens"], pred_labels, sample["offsets"])
-        spans = merge_spans(word_preds)
+        # Filter tokens using -100 labels (same as training)
+        labels = sample["labels"]
+        seq_p: List[str] = []
+        seq_l: List[str] = []
+        token_idxs: List[int] = []
+        for idx, l_id in enumerate(labels):
+            if l_id == -100:
+                continue  # Skip special tokens and padding
+            seq_p.append(id2label[int(filtered[idx])])
+            seq_l.append(label_list[l_id])
+            token_idxs.append(idx)
 
-        pred_records = []
         text = sample["text"]
         category = sample["category"]
         record_id = sample["record_id"]
-        gold = sample["gold"]
-        gold_vals = {val for _, _, val in gold}
+        offsets = sample["offsets"]
 
-        for span in spans:
-            aspect = span["aspect_name"].strip()
-            start, end = span["start"], span["end"]
-            value = text[start:end].strip()
-            if not value:
-                continue
-            if aspect == "U":
-                aspect = "O"
-            if value not in gold_vals:
-                matches = difflib.get_close_matches(value, gold_vals, n=1, cutoff=0.0)
-                if matches:
-                    closest_val = matches[0]
-                    gold_aspect = next(gasp for _, gasp, gval in gold if gval == closest_val)
-                    # keep original category/aspect but note mismatch (aligns with inference_latest behaviour)
-                    _ = gold_aspect  # placeholder to emphasise usage
-            pred_records.append({
-                "record_id": str(record_id),
-                "category": category,
-                "aspect_name": aspect,
-                "span": value,
-            })
+        # Extract spans using training's logic
+        for aspect, span in extract_spans(seq_l, token_idxs, offsets, text):
+            if aspect != "O":
+                all_targets.append({
+                    "record_id": str(record_id),
+                    "category": category,
+                    "aspect_name": aspect,
+                    "span": span,
+                })
 
-        for cat, asp, val in gold:
-            all_targets.append({
-                "record_id": str(record_id),
-                "category": cat,
-                "aspect_name": asp,
-                "span": val,
-            })
-        all_preds.extend(pred_records)
+        for aspect, span in extract_spans(seq_p, token_idxs, offsets, text):
+            if aspect != "O":
+                all_preds.append({
+                    "record_id": str(record_id),
+                    "category": category,
+                    "aspect_name": aspect,
+                    "span": span,
+                })
 
     comp = compute_competition_score(all_targets, all_preds, beta=0.2)
     metrics = {"overall_score": comp["overall_score"]}
