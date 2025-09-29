@@ -225,8 +225,8 @@ def evaluate_thresholds(
     thresholds: Dict[int, float],
     o_id: int,
 ) -> Tuple[float, Dict[str, float]]:
-    all_targets: List[Tuple[str, str, str]] = []
-    all_preds_with_cat: List[Tuple[str, str, str]] = []
+    all_targets: List[Dict[str, str]] = []
+    all_preds: List[Dict[str, str]] = []
 
     for sample in samples:
         probs = torch.from_numpy(sample["probs"]).unsqueeze(0)
@@ -240,6 +240,7 @@ def evaluate_thresholds(
         pred_records = []
         text = sample["text"]
         category = sample["category"]
+        record_id = sample["record_id"]
         gold = sample["gold"]
         gold_vals = {val for _, _, val in gold}
 
@@ -258,12 +259,23 @@ def evaluate_thresholds(
                     gold_aspect = next(gasp for _, gasp, gval in gold if gval == closest_val)
                     # keep original category/aspect but note mismatch (aligns with inference_latest behaviour)
                     _ = gold_aspect  # placeholder to emphasise usage
-            pred_records.append((category, aspect, value))
+            pred_records.append({
+                "record_id": str(record_id),
+                "category": category,
+                "aspect_name": aspect,
+                "span": value,
+            })
 
-        all_targets.extend(gold)
-        all_preds_with_cat.extend(pred_records)
+        for cat, asp, val in gold:
+            all_targets.append({
+                "record_id": str(record_id),
+                "category": cat,
+                "aspect_name": asp,
+                "span": val,
+            })
+        all_preds.extend(pred_records)
 
-    comp = compute_competition_score(all_targets, all_preds_with_cat, beta=0.2)
+    comp = compute_competition_score(all_targets, all_preds, beta=0.2)
     metrics = {"overall_score": comp["overall_score"]}
     metrics.update({f"cat_{cat}": score for cat, score in comp["per_category"].items()})
     return comp["overall_score"], metrics
@@ -288,14 +300,21 @@ def build_candidate_thresholds(threshold_bins: Dict[int, Dict[str, object]]) -> 
 
 def coordinate_descent(
     samples: List[Dict[str, object]],
+    baseline_1_metrics: Dict[str, float],
+    baseline_2_score: float,
     base_thresholds: Dict[int, float],
     candidate_thresholds: Dict[int, List[float]],
     o_id: int,
     max_passes: int,
 ) -> Tuple[Dict[int, float], Dict[str, float]]:
+    print(f"\n{'='*60}")
+    print(f"Baseline 2 (mean thresholds) overall score: {baseline_2_score:.6f}")
+    print(f"{'='*60}\n")
+
     thresholds = dict(base_thresholds)
-    best_score, best_metrics = evaluate_thresholds(samples, thresholds, o_id)
-    print(f"Baseline overall score: {best_score:.6f}")
+    best_score = baseline_2_score
+    best_metrics = baseline_1_metrics.copy()
+    best_metrics["overall_score"] = baseline_2_score
 
     class_ids = [cls for cls in thresholds.keys() if cls != o_id]
 
@@ -396,20 +415,39 @@ def main() -> None:
 
     args.threshold_bins = threshold_bins_path
 
+    o_id = label2id.get("O", 0)
+
+    # Baseline 1: No thresholds (raw argmax predictions)
+    print(f"\n{'='*60}")
+    print("Evaluating Baseline 1: No thresholds (raw argmax predictions)")
+    print(f"{'='*60}")
+    no_thresholds = {cls: 0.0 for cls in range(len(label_list))}
+    baseline_1_score, baseline_1_metrics = evaluate_thresholds(samples, no_thresholds, o_id)
+    print(f"Baseline 1 overall score: {baseline_1_score:.6f}")
+    print("Per-category scores:")
+    for key, value in sorted(baseline_1_metrics.items()):
+        if key != "overall_score":
+            print(f"  {key}: {value:.6f}")
+
+    # Baseline 2: Mean thresholds per class
     base_thresholds = {int(cls): float(stats.get("mean", 0.0)) for cls, stats in threshold_bins.items()}
+    baseline_2_score, baseline_2_metrics = evaluate_thresholds(samples, base_thresholds, o_id)
 
     candidate_thresholds = build_candidate_thresholds(threshold_bins)
 
-    o_id = label2id.get("O", 0)
     refined_thresholds, metrics = coordinate_descent(
         samples,
+        baseline_1_metrics,
+        baseline_2_score,
         base_thresholds,
         candidate_thresholds,
         o_id=o_id,
         max_passes=args.max_passes,
     )
 
-    print("Refined metrics:")
+    print(f"\n{'='*60}")
+    print("Refined metrics (after coordinate descent):")
+    print(f"{'='*60}")
     for key, value in sorted(metrics.items()):
         if key == "overall_score":
             print(f"  overall_score: {value:.6f}")
@@ -419,12 +457,20 @@ def main() -> None:
     payload = {
         "thresholds": {id2label[int(cls)]: float(val) for cls, val in refined_thresholds.items()},
         "metrics": metrics,
+        "baseline_1_score": baseline_1_score,
+        "baseline_1_metrics": baseline_1_metrics,
+        "baseline_2_score": baseline_2_score,
+        "baseline_2_metrics": baseline_2_metrics,
         "fold": args.fold,
     }
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     with args.output_json.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
-    print(f"Saved refined thresholds to {args.output_json}")
+    print(f"\nSaved refined thresholds to {args.output_json}")
+    print(f"\nSummary:")
+    print(f"  Baseline 1 (no thresholds):    {baseline_1_score:.6f}")
+    print(f"  Baseline 2 (mean thresholds):  {baseline_2_score:.6f}")
+    print(f"  Refined (coordinate descent):  {metrics['overall_score']:.6f}")
 
 
 if __name__ == "__main__":  # pragma: no cover
