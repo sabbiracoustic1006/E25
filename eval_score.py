@@ -1,98 +1,116 @@
 from collections import Counter, defaultdict
+from typing import Dict, Iterable, Tuple
 
-def compute_competition_score(true_entities,
-                              pred_entities,
-                              beta: float = 0.2,
-                              exclude_aspect: str = "O"):
+Entity = Tuple[str, str, str]
+
+
+def _build_counters(
+    entities: Iterable[Entity],
+    exclude_aspect: str,
+) -> Dict[Tuple[str, str], Counter]:
+    counter: Dict[Tuple[str, str], Counter] = defaultdict(Counter)
+    for category, aspect, value in entities:
+        if aspect == exclude_aspect:
+            continue
+        counter[(category, aspect)][value] += 1
+    return counter
+
+
+def compute_competition_score(
+    true_entities,
+    pred_entities,
+    beta: float = 0.2,
+    exclude_aspect: str = "O",
+):
+    """Compute per-category F-beta scores.
+
+    Parameters
+    ----------
+    true_entities, pred_entities:
+        Iterable of ``(category, aspect_name, aspect_value)`` tuples.
+    beta:
+        Weighting for recall inside the F-score (defaults to 0.2).
+    exclude_aspect:
+        Aspect name to ignore during scoring, defaults to ``"O"``.
+
+    Returns
+    -------
+    dict
+        ``{"per_category": {cat: score, ...}, "overall_score": mean}``
     """
-    true_entities, pred_entities: lists of (category, aspect_name, aspect_value)
-    beta: weight for F_beta
-    exclude_aspect: aspect_name to ignore (default "O")
-    Returns: dict with per-category score and overall mean score
-    """
-    # 1) build counters: for each (cat,asp) count of values
-    true_counter = defaultdict(Counter)
-    pred_counter = defaultdict(Counter)
-    categories = set()
-    for cat, asp, val in true_entities:
-        if asp == exclude_aspect: continue
-        true_counter[(cat, asp)][val] += 1
-        categories.add(cat)
-    for cat, asp, val in pred_entities:
-        if asp == exclude_aspect: continue
-        pred_counter[(cat, asp)][val] += 1
-        categories.add(cat)
 
-    # 2) for each category compute total true spans (for weighting)
-    total_true_by_cat = defaultdict(int)
-    for (cat, asp), ctr in true_counter.items():
-        total_true_by_cat[cat] += sum(ctr.values())
+    true_counter = _build_counters(true_entities, exclude_aspect)
+    pred_counter = _build_counters(pred_entities, exclude_aspect)
 
-    # 3) compute per-category weighted F
-    cat_scores = {}
+    categories = {
+        cat for cat, _ in true_counter.keys()
+    } | {
+        cat for cat, _ in pred_counter.keys()
+    }
+
+    cat_scores: Dict[str, float] = {}
     for cat in sorted(categories):
-        # collect all aspects for this category
-        asps = {asp for (c, asp) in true_counter.keys() if c == cat}
-        if not asps:
+        tp = fp = fn = 0
+
+        aspects = {
+            aspect
+            for c, aspect in true_counter.keys()
+            if c == cat
+        } | {
+            aspect
+            for c, aspect in pred_counter.keys()
+            if c == cat
+        }
+
+        if not aspects:
             cat_scores[cat] = 0.0
             continue
 
-        cat_true_total = total_true_by_cat[cat]
-        weighted_f_sum = 0.0
+        for aspect in aspects:
+            true_counts = true_counter.get((cat, aspect), Counter())
+            pred_counts = pred_counter.get((cat, aspect), Counter())
 
-        for asp in asps:
-            tcnts = true_counter[(cat, asp)]
-            pcnts = pred_counter.get((cat, asp), Counter())
+            values = set(true_counts.keys()) | set(pred_counts.keys())
+            for value in values:
+                t_val = true_counts.get(value, 0)
+                p_val = pred_counts.get(value, 0)
+                matched = min(t_val, p_val)
+                tp += matched
+                fn += t_val - matched
+                fp += p_val - matched
 
-            true_total = sum(tcnts.values())
-            pred_total = sum(pcnts.values())
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        denom = (beta ** 2) * precision + recall
+        f_beta = (
+            (1 + beta ** 2) * precision * recall / denom
+            if denom > 0
+            else 0.0
+        )
 
-            # true positives = sum of min(count_true[val], count_pred[val])
-            tp = sum(min(tcnts[v], pcnts.get(v, 0)) for v in tcnts)
+        cat_scores[cat] = f_beta
 
-            if true_total == 0 or pred_total == 0:
-                f_beta = 0.0
-            else:
-                precision = tp / pred_total
-                recall    = tp / true_total
-                denom = (beta**2) * precision + recall
-                f_beta = ((1 + beta**2) * precision * recall / denom) if denom>0 else 0.0
-
-            weight = true_total / cat_true_total
-            weighted_f_sum += weight * f_beta
-
-        cat_scores[cat] = weighted_f_sum
-
-    # 4) mean across categories
-    if cat_scores:
-        overall = sum(cat_scores.values()) / len(cat_scores)
-    else:
-        overall = 0.0
+    overall = sum(cat_scores.values()) / len(cat_scores) if cat_scores else 0.0
 
     return {"per_category": cat_scores, "overall_score": overall}
 
 
 if __name__ == "__main__":
-    # ————————————————
-    # EXAMPLE USAGE
-    # ————————————————
-    # Suppose your gold file contained:
     true_ents = [
         ("0", "material", "ceramic"),
         ("0", "material", "ceramic"),
-        ("0", "color",    "red"),
-        ("1","type",     "timing belt"),
-        ("1","type",     "chain"),
+        ("0", "color", "red"),
+        ("1", "type", "timing belt"),
+        ("1", "type", "chain"),
     ]
 
-    # And your model predicted:
     pred_ents = [
         ("0", "material", "ceramic"),
-        ("0", "color",    "blue"),
+        ("0", "color", "blue"),
         ("0", "material", "fiber"),
-        ("1","type",     "timing belt"),
+        ("1", "type", "timing belt"),
     ]
 
     scores = compute_competition_score(true_ents, pred_ents, beta=0.2)
     print("Per-category scores:", scores["per_category"])
-    print("Overall score:    ", scores["overall_score"])
+    print("Overall score:", scores["overall_score"])

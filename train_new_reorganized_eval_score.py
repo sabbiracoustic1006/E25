@@ -312,20 +312,31 @@ def print_distribution_report(
         print(f"Report written to {file_path}")
 
 
-def extract_spans(seq: Sequence[str], positions: Sequence[int]) -> List[Tuple[str, str]]:
+def extract_spans(
+    seq: Sequence[str],
+    offsets: Sequence[Tuple[int, int]],
+    text: str,
+) -> List[Tuple[str, str]]:
     spans: List[Tuple[str, str]] = []
     idx = 0
     while idx < len(seq):
         label = seq[idx]
         if label.startswith("B-"):
             aspect = label[2:]
-            start = positions[idx]
-            end = start
+            start, end = offsets[idx]
             idx += 1
             while idx < len(seq) and seq[idx] == f"I-{aspect}":
-                end = positions[idx]
+                _, end = offsets[idx]
                 idx += 1
-            spans.append((aspect, f"{start} {end}"))
+
+            if end <= start:
+                continue
+
+            value = text[start:end].strip()
+            if not value:
+                value = text[start:end]
+            value = " ".join(value.split())
+            spans.append((aspect, value))
         else:
             idx += 1
     return spans
@@ -391,7 +402,10 @@ def build_seqeval_metrics_fn(
 
 
 def build_competition_metric_fn(
-    label_list: Sequence[str], valid_cat: Sequence[str]
+    label_list: Sequence[str],
+    valid_cat: Sequence[str],
+    valid_texts: Sequence[str],
+    valid_offsets: Sequence[Sequence[Tuple[int, int]]],
 ) -> Callable[[Trainer.EvalPrediction], Dict[str, float]]:
     def compute_metrics(p):
         preds = np.argmax(p.predictions, axis=2)
@@ -403,21 +417,22 @@ def build_competition_metric_fn(
         for i, (pred_seq, label_seq) in enumerate(zip(preds, labels)):
             seq_p: List[str] = []
             seq_l: List[str] = []
-            token_idxs: List[int] = []
+            offsets: List[Tuple[int, int]] = []
             for idx, (p_id, l_id) in enumerate(zip(pred_seq, label_seq)):
                 if l_id == -100:
                     continue
                 seq_p.append(label_list[p_id])
                 seq_l.append(label_list[l_id])
-                token_idxs.append(idx)
+                offsets.append(valid_offsets[i][idx])
 
             category = valid_cat[i]
-            for aspect, span in extract_spans(seq_l, token_idxs):
-                if aspect != "O":
-                    true_entities.append((category, aspect, span))
-            for aspect, span in extract_spans(seq_p, token_idxs):
-                if aspect != "O":
-                    pred_entities.append((category, aspect, span))
+            text = valid_texts[i]
+            for aspect, value in extract_spans(seq_l, offsets, text):
+                if aspect != "O" and value:
+                    true_entities.append((category, aspect, value))
+            for aspect, value in extract_spans(seq_p, offsets, text):
+                if aspect != "O" and value:
+                    pred_entities.append((category, aspect, value))
 
         comp = compute_competition_score(true_entities, pred_entities, beta=0.2)
         metrics: Dict[str, float] = {"f0.2": comp["overall_score"]}
@@ -578,8 +593,9 @@ def main() -> None:
     raw_train = build_raw_examples(train_df)
     raw_valid = build_raw_examples(valid_df)
 
-    valid_cat = valid_df.groupby("Record Number")["Category"].first().values
-    print(valid_cat)
+    valid_cat = (
+        valid_df.groupby("Record Number")["Category"].first().tolist()
+    )
 
     label_list, label2id, id2label = build_label_maps(df_tagged, train_df)
     label_weights = build_label_weights(label_list, args.o_label_weight)
@@ -621,7 +637,20 @@ def main() -> None:
     )
 
     data_collator = DataCollatorForTokenClassification(tokenizer)
-    compute_metrics = build_competition_metric_fn(label_list, valid_cat)
+    valid_texts = raw_valid["text"].tolist()
+    valid_encodings = tokenizer(
+        valid_texts,
+        truncation=True,
+        return_offsets_mapping=True,
+    )
+    valid_offsets = valid_encodings["offset_mapping"]
+
+    compute_metrics = build_competition_metric_fn(
+        label_list,
+        valid_cat,
+        valid_texts,
+        valid_offsets,
+    )
 
     config = AutoConfig.from_pretrained(
         model_id,
