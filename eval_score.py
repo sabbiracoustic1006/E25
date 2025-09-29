@@ -129,10 +129,10 @@ def compute_competition_score(
         true_map = true_by_record.get(record_id, {})
         pred_map = pred_by_record.get(record_id, {})
         aspect_keys = set(true_map.keys()) | set(pred_map.keys())
-        if r_idx < 5:  # Print debug info for first few records
-            print("----" * 10)
-            print("Record ID:", record_id)
-            print(true_map, pred_map, aspect_keys)
+        # if r_idx < 5:  # Print debug info for first few records
+        #     print("----" * 10)
+        #     print("Record ID:", record_id)
+        #     print(true_map, pred_map, aspect_keys)
 
         for key in aspect_keys:
             t_counter = true_map.get(key, Counter())
