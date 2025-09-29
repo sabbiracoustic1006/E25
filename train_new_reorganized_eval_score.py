@@ -170,7 +170,7 @@ def stratified_kfold_split(
 
 def build_raw_examples(df: pd.DataFrame) -> pd.DataFrame:
     examples: List[Dict[str, object]] = []
-    for record_id, group in df.groupby("Record Number"):
+    for record_id, group in df.groupby("Record Number", sort=False):
         text = group["Title"].iloc[0]
         spans = list(zip(group["Aspect Value"], group["Aspect Name"]))
         examples.append({"record_id": record_id, "text": text, "spans": spans})
@@ -312,20 +312,29 @@ def print_distribution_report(
         print(f"Report written to {file_path}")
 
 
-def extract_spans(seq: Sequence[str], positions: Sequence[int]) -> List[Tuple[str, str]]:
+def extract_spans(
+    seq: Sequence[str],
+    positions: Sequence[int],
+    offsets: Sequence[Tuple[int, int]],
+    text: str,
+) -> List[Tuple[str, str]]:
     spans: List[Tuple[str, str]] = []
     idx = 0
     while idx < len(seq):
         label = seq[idx]
         if label.startswith("B-"):
             aspect = label[2:]
-            start = positions[idx]
-            end = start
+            start_pos = positions[idx]
+            end_pos = start_pos
             idx += 1
             while idx < len(seq) and seq[idx] == f"I-{aspect}":
-                end = positions[idx]
+                end_pos = positions[idx]
                 idx += 1
-            spans.append((aspect, f"{start} {end}"))
+
+            start_char, _ = offsets[start_pos]
+            _, end_char = offsets[end_pos]
+            span_text = text[start_char:end_char].strip()
+            spans.append((aspect, span_text))
         else:
             idx += 1
     return spans
@@ -391,14 +400,34 @@ def build_seqeval_metrics_fn(
 
 
 def build_competition_metric_fn(
-    label_list: Sequence[str], valid_cat: Sequence[str]
+    label_list: Sequence[str],
+    tokenizer: AutoTokenizer,
+    valid_texts: Sequence[str],
+    valid_record_ids: Sequence[str],
+    valid_cat: Sequence[str],
 ) -> Callable[[Trainer.EvalPrediction], Dict[str, float]]:
+    encoded_valid = tokenizer(
+        list(valid_texts),
+        truncation=True,
+        return_offsets_mapping=True,
+        padding=False,
+    )
+    offset_mappings: List[List[Tuple[int, int]]] = [
+        [(int(start), int(end)) for start, end in offsets]
+        for offsets in encoded_valid["offset_mapping"]
+    ]
+
     def compute_metrics(p):
         preds = np.argmax(p.predictions, axis=2)
         labels = p.label_ids
 
-        true_entities: List[Tuple[str, str, str]] = []
-        pred_entities: List[Tuple[str, str, str]] = []
+        true_entities: List[Dict[str, str]] = []
+        pred_entities: List[Dict[str, str]] = []
+
+        if len(valid_record_ids) != len(preds) or len(valid_cat) != len(preds):
+            raise ValueError(
+                "Mismatch between validation metadata and prediction batches"
+            )
 
         for i, (pred_seq, label_seq) in enumerate(zip(preds, labels)):
             seq_p: List[str] = []
@@ -412,12 +441,30 @@ def build_competition_metric_fn(
                 token_idxs.append(idx)
 
             category = valid_cat[i]
-            for aspect, span in extract_spans(seq_l, token_idxs):
+            record_id = valid_record_ids[i]
+            offsets = offset_mappings[i]
+            text = valid_texts[i]
+
+            for aspect, span in extract_spans(seq_l, token_idxs, offsets, text):
                 if aspect != "O":
-                    true_entities.append((category, aspect, span))
-            for aspect, span in extract_spans(seq_p, token_idxs):
+                    true_entities.append(
+                        {
+                            "record_id": str(record_id),
+                            "category": category,
+                            "aspect_name": aspect,
+                            "span": span,
+                        }
+                    )
+            for aspect, span in extract_spans(seq_p, token_idxs, offsets, text):
                 if aspect != "O":
-                    pred_entities.append((category, aspect, span))
+                    pred_entities.append(
+                        {
+                            "record_id": str(record_id),
+                            "category": category,
+                            "aspect_name": aspect,
+                            "span": span,
+                        }
+                    )
 
         comp = compute_competition_score(true_entities, pred_entities, beta=0.2)
         metrics: Dict[str, float] = {"f0.2": comp["overall_score"]}
@@ -578,7 +625,12 @@ def main() -> None:
     raw_train = build_raw_examples(train_df)
     raw_valid = build_raw_examples(valid_df)
 
-    valid_cat = valid_df.groupby("Record Number")["Category"].first().values
+    category_lookup = (
+        valid_df.groupby("Record Number", sort=False)["Category"].first().to_dict()
+    )
+    valid_record_ids = raw_valid["record_id"].astype(str).tolist()
+    valid_cat = [category_lookup[rid] for rid in raw_valid["record_id"]]
+    valid_texts = raw_valid["text"].tolist()
     print(valid_cat)
 
     label_list, label2id, id2label = build_label_maps(df_tagged, train_df)
@@ -621,7 +673,13 @@ def main() -> None:
     )
 
     data_collator = DataCollatorForTokenClassification(tokenizer)
-    compute_metrics = build_competition_metric_fn(label_list, valid_cat)
+    compute_metrics = build_competition_metric_fn(
+        label_list,
+        tokenizer,
+        valid_texts,
+        valid_record_ids,
+        valid_cat,
+    )
 
     config = AutoConfig.from_pretrained(
         model_id,
