@@ -260,8 +260,8 @@ def evaluate_thresholds(
 
 def build_candidate_thresholds(
     threshold_bins: Dict[int, Dict[str, object]],
-    step_multiplier: float = 0.05,
-    max_steps: int = 10,
+    step_multiplier: float = 0.025,
+    max_steps: int = 20,
 ) -> Dict[int, List[float]]:
     """Generate mean-plus-sigma candidates for each class.
 
