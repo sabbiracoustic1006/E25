@@ -782,6 +782,32 @@ def main() -> None:
 
     trainer.train()
 
+    # Print best validation score
+    if trainer.state.best_metric is not None:
+        best_score = trainer.state.best_metric
+        best_epoch = trainer.state.best_model_checkpoint
+        print(f"\n{'='*60}")
+        print(f"BEST VALIDATION SCORE")
+        print(f"{'='*60}")
+        print(f"  Metric (f0.2): {best_score:.6f}")
+        if best_epoch:
+            print(f"  Best checkpoint: {best_epoch}")
+        print(f"{'='*60}\n")
+
+    # Print all evaluation scores from history
+    if hasattr(trainer.state, "log_history"):
+        eval_scores = [
+            entry for entry in trainer.state.log_history
+            if "eval_f0.2" in entry
+        ]
+        if eval_scores:
+            print(f"Validation scores per epoch:")
+            for i, entry in enumerate(eval_scores, 1):
+                epoch = entry.get("epoch", i)
+                score = entry.get("eval_f0.2", 0.0)
+                print(f"  Epoch {epoch}: f0.2 = {score:.6f}")
+            print()
+
     if not args.use_crf:
         model.save_pretrained(f"{args.output_dir}/final")
         tokenizer.save_pretrained(f"{args.output_dir}/final")
