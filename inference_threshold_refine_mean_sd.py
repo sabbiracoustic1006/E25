@@ -310,9 +310,11 @@ def coordinate_descent(
     baseline_2_score: float,
     base_thresholds: Dict[int, float],
     candidate_thresholds: Dict[int, List[float]],
+    threshold_bins: Dict[int, Dict[str, object]],
+    step_multiplier: float,
     o_id: int,
     max_passes: int,
-) -> Tuple[Dict[int, float], Dict[str, float]]:
+) -> Tuple[Dict[int, float], Dict[str, float], Dict[int, float]]:
     print(f"\n{'='*60}")
     print(f"Baseline 2 (mean thresholds) overall score: {baseline_2_score:.6f}")
     print(f"Starting mean+σ sweep optimization")
@@ -357,7 +359,21 @@ def coordinate_descent(
         if not improved:
             break
 
-    return thresholds, best_metrics
+    # Calculate k values for each class
+    k_values = {}
+    for cls, threshold in thresholds.items():
+        stats = threshold_bins.get(cls, {})
+        mean = float(stats.get("mean", 0.0))
+        std = float(stats.get("std", 0.0))
+
+        if std > 1e-9:
+            step = std * step_multiplier
+            k = (threshold - mean) / step
+            k_values[cls] = k
+        else:
+            k_values[cls] = 0.0
+
+    return thresholds, best_metrics, k_values
 
 
 def parse_args() -> argparse.Namespace:
@@ -440,14 +456,17 @@ def main() -> None:
     base_thresholds = {int(cls): float(stats.get("mean", 0.0)) for cls, stats in threshold_bins.items()}
     baseline_2_score, baseline_2_metrics = evaluate_thresholds(samples, base_thresholds, o_id)
 
-    candidate_thresholds = build_candidate_thresholds(threshold_bins)
+    step_multiplier = 0.025
+    candidate_thresholds = build_candidate_thresholds(threshold_bins, step_multiplier=step_multiplier)
 
-    refined_thresholds, metrics = coordinate_descent(
+    refined_thresholds, metrics, k_values = coordinate_descent(
         samples,
         baseline_1_metrics,
         baseline_2_score,
         base_thresholds,
         candidate_thresholds,
+        threshold_bins,
+        step_multiplier,
         o_id=o_id,
         max_passes=args.max_passes,
     )
@@ -461,6 +480,19 @@ def main() -> None:
         else:
             print(f"  {key}: {value:.6f}")
 
+    print(f"\n{'='*60}")
+    print("Optimal k values (threshold = mean + k * step_multiplier * std):")
+    print(f"step_multiplier = {step_multiplier}")
+    print(f"{'='*60}")
+    for cls_id in sorted(k_values.keys()):
+        label = id2label.get(cls_id, f"cls_{cls_id}")
+        k = k_values[cls_id]
+        stats = threshold_bins.get(cls_id, {})
+        mean = float(stats.get("mean", 0.0))
+        std = float(stats.get("std", 0.0))
+        threshold = refined_thresholds[cls_id]
+        print(f"  {label:20s}: k={k:6.2f}  (mean={mean:.4f}, std={std:.4f}, threshold={threshold:.4f})")
+
     print(f"\nSummary:")
     print(f"  Baseline 1 (no thresholds):    {baseline_1_score:.6f}")
     print(f"  Baseline 2 (mean thresholds):  {baseline_2_score:.6f}")
@@ -468,6 +500,8 @@ def main() -> None:
 
     payload = {
         "thresholds": {id2label[int(cls)]: float(val) for cls, val in refined_thresholds.items()},
+        "k_values": {id2label[int(cls)]: float(k) for cls, k in k_values.items()},
+        "step_multiplier": step_multiplier,
         "metrics": metrics,
         "baseline_1_score": baseline_1_score,
         "baseline_1_metrics": baseline_1_metrics,
