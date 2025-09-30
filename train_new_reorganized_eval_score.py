@@ -584,7 +584,7 @@ def main() -> None:
 
     weight_tag = format_o_weight_identifier(args.o_label_weight)
     output_base = Path(args.output_dir)
-    final_output_dir = output_base / f"o_weight_{weight_tag}"
+    final_output_dir = output_base / f"o_weight_{weight_tag}" / f"fold{args.fold}"
     final_output_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir = str(final_output_dir)
     print(f"Saving model artifacts to {args.output_dir}")
@@ -809,9 +809,9 @@ def main() -> None:
             print()
 
     if not args.use_crf:
-        model.save_pretrained(f"{args.output_dir}/final")
-        tokenizer.save_pretrained(f"{args.output_dir}/final")
-        print(f"Model saved to {args.output_dir}/final")
+        model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        print(f"Model saved to {args.output_dir}")
 
 
 if __name__ == "__main__":
