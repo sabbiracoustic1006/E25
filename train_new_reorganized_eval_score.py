@@ -136,6 +136,14 @@ def build_parser() -> argparse.ArgumentParser:
             "within the cross-entropy loss. 1.0 keeps uniform weights."
         ),
     )
+    parser.add_argument(
+        "--use_custom_label_smoothing",
+        action="store_true",
+        help=(
+            "Enable custom label smoothing: 80%% on true label + 20%% on B-O for non-O labels, "
+            "100%% on true label for B-O/I-O/O labels"
+        ),
+    )
     return parser
 
 
@@ -545,9 +553,92 @@ def select_lora_target_modules(model_id: str) -> Sequence[str]:
 
 
 class WeightedTrainer(Trainer):
-    def __init__(self, *args, label_weights: torch.Tensor, **kwargs):
+    def __init__(
+        self,
+        *args,
+        label_weights: torch.Tensor,
+        label2id: Dict[str, int] | None = None,
+        use_custom_label_smoothing: bool = False,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.label_weights = label_weights
+        self.label2id = label2id
+        self.use_custom_label_smoothing = use_custom_label_smoothing
+
+        # Get B-O index for label smoothing
+        self.b_o_idx = None
+        self.o_idx = None
+        self.i_o_idx = None
+        if label2id is not None and use_custom_label_smoothing:
+            self.b_o_idx = label2id.get("B-O")
+            self.o_idx = label2id.get("O")
+            self.i_o_idx = label2id.get("I-O")
+            print(f"Custom label smoothing enabled: B-O idx={self.b_o_idx}, O idx={self.o_idx}, I-O idx={self.i_o_idx}")
+
+    def apply_custom_label_smoothing(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Apply custom label smoothing:
+        - For non-O labels (not B-O, I-O, O): 80% on true label, 20% on B-O
+        - For B-O, I-O, O labels: 100% on true label (no smoothing)
+        """
+        num_classes = logits.size(-1)
+        device = logits.device
+
+        # Create one-hot encoded labels
+        # Shape: (batch_size * seq_len, num_classes)
+        labels_flat = labels.view(-1)
+        valid_mask = labels_flat != -100
+
+        # Initialize smoothed labels with zeros
+        smoothed_labels = torch.zeros(labels_flat.size(0), num_classes, device=device)
+
+        if self.b_o_idx is None:
+            # Fallback: no smoothing
+            smoothed_labels[valid_mask] = torch.nn.functional.one_hot(
+                labels_flat[valid_mask], num_classes=num_classes
+            ).float()
+            return smoothed_labels
+
+        # Get valid labels
+        valid_labels = labels_flat[valid_mask]
+
+        # Determine which labels are O-type (B-O, I-O, O)
+        o_type_mask = torch.zeros_like(valid_labels, dtype=torch.bool)
+        if self.b_o_idx is not None:
+            o_type_mask |= (valid_labels == self.b_o_idx)
+        if self.i_o_idx is not None:
+            o_type_mask |= (valid_labels == self.i_o_idx)
+        if self.o_idx is not None:
+            o_type_mask |= (valid_labels == self.o_idx)
+
+        # For O-type labels: 100% on true label
+        o_type_indices = torch.where(valid_mask)[0][o_type_mask]
+        if len(o_type_indices) > 0:
+            smoothed_labels[o_type_indices] = torch.nn.functional.one_hot(
+                labels_flat[o_type_indices], num_classes=num_classes
+            ).float()
+
+        # For non-O-type labels: 80% on true label, 20% on B-O
+        non_o_type_mask = ~o_type_mask
+        non_o_type_indices = torch.where(valid_mask)[0][non_o_type_mask]
+        if len(non_o_type_indices) > 0:
+            # Start with one-hot (100% on true label)
+            one_hot = torch.nn.functional.one_hot(
+                labels_flat[non_o_type_indices], num_classes=num_classes
+            ).float()
+
+            # Apply smoothing: 80% on true label, 20% on B-O
+            smoothed = one_hot * 0.8
+            smoothed[:, self.b_o_idx] += 0.2
+
+            smoothed_labels[non_o_type_indices] = smoothed
+
+        return smoothed_labels
 
     def compute_loss(
         self,
@@ -560,11 +651,34 @@ class WeightedTrainer(Trainer):
         outputs = model(**inputs)
         if labels is not None:
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-            loss_fct = nn.CrossEntropyLoss(
-                weight=self.label_weights.to(logits.device),
-                ignore_index=-100,
-            )
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+            if self.use_custom_label_smoothing and self.b_o_idx is not None:
+                # Apply custom label smoothing
+                smoothed_labels = self.apply_custom_label_smoothing(logits, labels)
+
+                # Compute log softmax
+                log_probs = torch.nn.functional.log_softmax(logits.view(-1, logits.size(-1)), dim=-1)
+
+                # Compute cross entropy with smoothed labels
+                loss = -(smoothed_labels * log_probs).sum(dim=-1)
+
+                # Apply label weights if provided
+                if self.label_weights is not None:
+                    labels_flat = labels.view(-1)
+                    valid_mask = labels_flat != -100
+                    weights = self.label_weights.to(logits.device)[labels_flat[valid_mask]]
+                    loss_valid = loss[valid_mask]
+                    loss = (loss_valid * weights).sum() / weights.sum()
+                else:
+                    valid_mask = labels.view(-1) != -100
+                    loss = loss[valid_mask].mean()
+            else:
+                # Standard cross entropy with label weights
+                loss_fct = nn.CrossEntropyLoss(
+                    weight=self.label_weights.to(logits.device),
+                    ignore_index=-100,
+                )
+                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
         else:
             # Fallback to default behaviour if labels missing
             loss = outputs.loss if hasattr(outputs, "loss") else None
@@ -776,7 +890,12 @@ def main() -> None:
     )
 
     if label_weights is not None and not args.use_crf:
-        trainer = WeightedTrainer(label_weights=label_weights, **trainer_kwargs)
+        trainer = WeightedTrainer(
+            label_weights=label_weights,
+            label2id=label2id,
+            use_custom_label_smoothing=args.use_custom_label_smoothing,
+            **trainer_kwargs
+        )
     else:
         trainer = Trainer(**trainer_kwargs)
 
