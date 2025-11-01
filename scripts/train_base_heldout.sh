@@ -11,7 +11,7 @@ readonly O_WEIGHT_SLUG="1"
 readonly HELDOUT_RATIO="0.2"  # 15% held-out set
 
 # Paths
-readonly DATA_ROOT="/data/sahmed9/E25"
+readonly DATA_ROOT="/home/sahmed9/codes/E25"
 readonly OUTPUT_BASE="${DATA_ROOT}/multi_epoch_checkpoints_heldout/${MODEL_SLUG}/lr_${LR_SLUG}/o_weight_${O_WEIGHT_SLUG}"
 readonly TSV_DIR="${DATA_ROOT}/tsvs_multi_epoch_heldout"
 
