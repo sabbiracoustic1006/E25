@@ -784,7 +784,7 @@ def main() -> None:
     HELDOUT_SEED = 42
 
     # Check if held-out set already exists
-    heldout_dir = output_base / "heldout_data"
+    heldout_dir = Path("data")
     heldout_path = heldout_dir / f"heldout_set_ratio{args.heldout_ratio:.2f}.tsv"
 
     if args.heldout_ratio > 0 and heldout_path.exists():
