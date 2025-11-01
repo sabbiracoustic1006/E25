@@ -27,7 +27,7 @@ from transformers import (
 )
 
 from annexure_preprocessing import convert_tagged_to_aspect
-from eval_score_fixed import compute_competition_score
+from eval_score import compute_competition_score
 
 
 # ---------------------------------------------------------------------------
@@ -144,12 +144,6 @@ def build_parser() -> argparse.ArgumentParser:
             "100%% on true label for B-O/I-O/O labels"
         ),
     )
-    parser.add_argument(
-        "--heldout_ratio",
-        type=float,
-        default=0.0,
-        help="Ratio of data to hold out for final testing (0.0-0.5, default: 0.0). Uses stratified split.",
-    )
     return parser
 
 
@@ -158,21 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def stratified_kfold_split(
-    df: pd.DataFrame, n_splits: int = 5, random_state: int = 42, heldout_ratio: float = 0.0, heldout_seed: int = 42
-) -> Tuple[pd.DataFrame, pd.DataFrame | None]:
-    """
-    Perform stratified K-fold split with optional held-out set.
-
-    Args:
-        df: Input dataframe
-        n_splits: Number of folds
-        random_state: Random seed for K-fold split (affects train/validation split)
-        heldout_ratio: Ratio of data to hold out (0.0-0.5)
-        heldout_seed: Random seed for held-out split (independent of K-fold seed)
-
-    Returns:
-        Tuple of (df_with_folds, df_heldout). df_heldout is None if heldout_ratio=0.
-    """
+    df: pd.DataFrame, n_splits: int = 5, random_state: int = 42
+) -> pd.DataFrame:
     sumdf = (
         df.groupby("Record Number")
         .agg(
@@ -188,38 +169,11 @@ def stratified_kfold_split(
     rare = vc[vc < n_splits].index
     sumdf.loc[sumdf["key"].isin(rare), "key"] = "rare"
 
-    df_heldout = None
-
-    # If held-out ratio is specified, first split off the held-out set using heldout_seed
-    if heldout_ratio > 0:
-        from sklearn.model_selection import train_test_split
-
-        sumdf_train, sumdf_heldout = train_test_split(
-            sumdf,
-            test_size=heldout_ratio,
-            stratify=sumdf["key"],
-            random_state=heldout_seed,  # Use separate seed for held-out split
-        )
-
-        # Mark held-out records
-        heldout_record_ids = set(sumdf_heldout["Record Number"])
-        df_heldout = df[df["Record Number"].isin(heldout_record_ids)].copy()
-
-        # Continue with K-fold split on remaining data
-        sumdf = sumdf_train.reset_index(drop=True)
-
-    # Use random_state for K-fold split (affects which fold gets which data)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     sumdf["fold"] = -1
     for fold_idx, (_, vidx) in enumerate(skf.split(sumdf, sumdf["key"])):
         sumdf.loc[vidx, "fold"] = fold_idx
-
-    df_with_folds = df.merge(sumdf[["Record Number", "fold"]], on="Record Number", how="left")
-    # Remove held-out records from fold data
-    if heldout_ratio > 0:
-        df_with_folds = df_with_folds[~df_with_folds["Record Number"].isin(heldout_record_ids)]
-
-    return df_with_folds, df_heldout
+    return df.merge(sumdf[["Record Number", "fold"]], on="Record Number", how="left")
 
 
 def build_raw_examples(df: pd.DataFrame) -> pd.DataFrame:
@@ -750,72 +704,7 @@ def main() -> None:
     print(f"Saving model artifacts to {args.output_dir}")
 
     df_tagged = convert_tagged_to_aspect("data/Tagged_Titles_Train.tsv")
-
-    # Use fixed seed (42) for held-out split to ensure consistency across different training seeds
-    # The args.seed only affects K-fold split (train/validation split)
-    HELDOUT_SEED = 42
-
-    # Check if held-out set already exists
-    heldout_dir = output_base / "heldout_data"
-    heldout_path = heldout_dir / f"heldout_set_ratio{args.heldout_ratio:.2f}.tsv"
-
-    if args.heldout_ratio > 0 and heldout_path.exists():
-        # Load existing held-out set
-        print(f"=" * 80)
-        print(f"Loading existing held-out set from: {heldout_path}")
-        df_heldout_existing = pd.read_csv(heldout_path, sep="\t", dtype=str, keep_default_na=False)
-        existing_heldout_ids = set(df_heldout_existing["Record Number"].unique())
-        print(f"Existing held-out records: {len(existing_heldout_ids)}")
-
-        # Generate held-out split to verify it matches
-        df_with_folds, df_heldout_generated = stratified_kfold_split(
-            df_tagged,
-            n_splits=args.num_folds,
-            random_state=args.seed,
-            heldout_ratio=args.heldout_ratio,
-            heldout_seed=HELDOUT_SEED
-        )
-
-        generated_heldout_ids = set(df_heldout_generated["Record Number"].unique())
-
-        # Verify they match
-        if existing_heldout_ids == generated_heldout_ids:
-            print(f"✓ Existing held-out set matches expected split (seed={HELDOUT_SEED})")
-            df_heldout = df_heldout_existing
-        else:
-            missing_in_existing = generated_heldout_ids - existing_heldout_ids
-            extra_in_existing = existing_heldout_ids - generated_heldout_ids
-            error_msg = (
-                f"ERROR: Existing held-out set does NOT match expected split!\n"
-                f"  Expected {len(generated_heldout_ids)} records, found {len(existing_heldout_ids)}\n"
-                f"  Missing in existing: {len(missing_in_existing)} records\n"
-                f"  Extra in existing: {len(extra_in_existing)} records\n"
-                f"  Please delete {heldout_path} and rerun to regenerate."
-            )
-            raise ValueError(error_msg)
-        print(f"=" * 80)
-    else:
-        # Generate new held-out split
-        df_with_folds, df_heldout = stratified_kfold_split(
-            df_tagged,
-            n_splits=args.num_folds,
-            random_state=args.seed,
-            heldout_ratio=args.heldout_ratio,
-            heldout_seed=HELDOUT_SEED
-        )
-
-        # Save held-out set if it exists (saved independently of training seed)
-        if df_heldout is not None:
-            heldout_dir.mkdir(parents=True, exist_ok=True)
-            df_heldout.to_csv(heldout_path, sep="\t", index=False)
-            print(f"=" * 80)
-            print(f"Created new held-out set ({args.heldout_ratio*100:.1f}% of data)")
-            print(f"Saved to: {heldout_path}")
-            print(f"Held-out seed: {HELDOUT_SEED} (fixed, independent of training seed)")
-            print(f"Training K-fold seed: {args.seed} (affects train/validation split)")
-            print(f"Held-out records: {len(df_heldout['Record Number'].unique())}")
-            print(f"Remaining for training/validation: {len(df_with_folds['Record Number'].unique())}")
-            print(f"=" * 80)
+    df_with_folds = stratified_kfold_split(df_tagged, n_splits=args.num_folds, random_state=args.seed)
 
     print(f"Fold {args.fold} of {args.num_folds}:")
     train_df = df_with_folds[df_with_folds["fold"] != args.fold]
@@ -842,34 +731,13 @@ def main() -> None:
     print(f"Train Record Numbers: {len(train_record_ids)} unique IDs")
     valid_record_ids = set(valid_df["Record Number"].unique())
     print(f"Validation Record Numbers: {len(valid_record_ids)} unique IDs")
-
-    # Check for overlap between train and validation
     overlap = train_record_ids.intersection(valid_record_ids)
     assert (
         len(overlap) == 0
     ), f"Found {len(overlap)} overlapping Record Numbers between train and validation sets: {list(overlap)[:10]}..."
     print(
-        f"No overlap between train ({len(train_record_ids)} records) and validation ({len(valid_record_ids)} records) sets"
+        f"✓ No overlap between train ({len(train_record_ids)} records) and validation ({len(valid_record_ids)} records) sets"
     )
-
-    # Check for overlap with held-out set if it exists
-    if df_heldout is not None:
-        heldout_record_ids = set(df_heldout["Record Number"].unique())
-        print(f"Held-out Record Numbers: {len(heldout_record_ids)} unique IDs")
-
-        overlap_train_heldout = train_record_ids.intersection(heldout_record_ids)
-        assert (
-            len(overlap_train_heldout) == 0
-        ), f"Found {len(overlap_train_heldout)} overlapping Record Numbers between train and held-out sets: {list(overlap_train_heldout)[:10]}..."
-
-        overlap_valid_heldout = valid_record_ids.intersection(heldout_record_ids)
-        assert (
-            len(overlap_valid_heldout) == 0
-        ), f"Found {len(overlap_valid_heldout)} overlapping Record Numbers between validation and held-out sets: {list(overlap_valid_heldout)[:10]}..."
-
-        print(
-            f"✓ No overlap between held-out set and train/validation sets"
-        )
 
     raw_train = build_raw_examples(train_df)
     raw_valid = build_raw_examples(valid_df)

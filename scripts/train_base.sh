@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Configuration
-readonly MODEL_ID="microsoft/deberta-v3-small"
-readonly MODEL_SLUG="deberta-v3-small"
-readonly LR="2e-4"
-readonly LR_SLUG="2_e_neg_4"
+readonly MODEL_ID="microsoft/deberta-v3-base"
+readonly MODEL_SLUG="deberta-v3-base"
+readonly LR="1e-4"
+readonly LR_SLUG="1_e_neg_4"
 readonly O_WEIGHT="1.0"
 readonly O_WEIGHT_SLUG="1"
 
@@ -18,7 +18,7 @@ readonly TSV_DIR="${DATA_ROOT}/tsvs_multi_epoch_fixed"
 mkdir -p "${OUTPUT_BASE}"
 mkdir -p "${TSV_DIR}"
 
-echo "=== Training DeBERTa-v3-small with multi-epoch checkpoint evaluation ==="
+echo "=== Training DeBERTa-v3-base with multi-epoch checkpoint evaluation ==="
 echo "Model: ${MODEL_ID}"
 echo "Learning rate: ${LR}"
 echo "O-label weight: ${O_WEIGHT}"
@@ -38,7 +38,7 @@ for fold in {0..4}; do
   echo "=== Training fold ${fold} ==="
 
   # Train model for this fold
-  # CUDA_VISIBLE_DEVICES=0 python train_new_reorganized_eval_score_new_fixed.py \
+  # CUDA_VISIBLE_DEVICES=0 python train.py \
   #   --model_id "${MODEL_ID}" \
   #   --o_label_weight "${O_WEIGHT}" \
   #   --learning_rate "${LR}" \
@@ -50,7 +50,7 @@ for fold in {0..4}; do
   echo ""
 
   # Process epochs 5, 6, 7, 8, 9
-  for epoch in 5 6 7; do
+  for epoch in 5 6 7 8 9; do
     # Determine checkpoint directory based on epoch
     # Assuming 125 steps per epoch (adjust if needed based on your training)
     step=$((epoch * 125))
@@ -67,7 +67,7 @@ for fold in {0..4}; do
 
     # Refine thresholds with category-wise optimization
     echo "Step 1/2: Refining category-wise thresholds for epoch ${epoch}..."
-    CUDA_VISIBLE_DEVICES=0 python inference_threshold_refine_mean_sd_categorywise_fixed.py \
+    CUDA_VISIBLE_DEVICES=0 python refine_thresholds.py \
       --model_dir "${CHECKPOINT_DIR}" \
       --fold ${fold} \
       --device cuda:0 \
@@ -76,16 +76,16 @@ for fold in {0..4}; do
 
     # Generate submission with category-wise thresholds
     echo "Step 2/2: Generating submission for epoch ${epoch}..."
-    CUDA_VISIBLE_DEVICES=0 python submit_quiz_with_thresholds_categorywise.py \
+    CUDA_VISIBLE_DEVICES=0 python generate_submission.py \
       --model_dir "${CHECKPOINT_DIR}" \
       --threshold_path "${OUTPUT_BASE}/refined_thresholds_categorywise_fold${fold}_epoch${epoch}_fixed.json" \
       --start_idx 5001 \
       --end_idx 30000 \
-      --output_file "${TSV_DIR}/deberta_v3_small_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold${fold}_epoch${epoch}.tsv"
+      --output_file "${TSV_DIR}/deberta_v3_base_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold${fold}_epoch${epoch}.tsv"
 
     echo "✓ Epoch ${epoch} completed!"
     echo "  - Thresholds: ${OUTPUT_BASE}/refined_thresholds_categorywise_fold${fold}_epoch${epoch}.json"
-    echo "  - Submission: ${TSV_DIR}/deberta_v3_small_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold${fold}_epoch${epoch}.tsv"
+    echo "  - Submission: ${TSV_DIR}/deberta_v3_base_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold${fold}_epoch${epoch}.tsv"
     echo ""
   done
 
@@ -100,7 +100,7 @@ echo ""
 echo "Output structure:"
 echo "  Models: ${OUTPUT_BASE}/fold*/checkpoint-*"
 echo "  Thresholds: ${OUTPUT_BASE}/refined_thresholds_categorywise_fold*_epoch*.json"
-echo "  Submissions: ${TSV_DIR}/deberta_v3_small_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold*_epoch*.tsv"
+echo "  Submissions: ${TSV_DIR}/deberta_v3_base_lr_${LR_SLUG}_o_weight_${O_WEIGHT_SLUG}_fold*_epoch*.tsv"
 echo ""
 echo "Total submissions generated: $((5 * 5)) files (5 folds × 5 epochs)"
 echo "========================================================================="

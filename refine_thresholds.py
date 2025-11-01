@@ -16,7 +16,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-from eval_score_fixed import compute_competition_score
+from eval_score import compute_competition_score
 from utils import convert_tagged_to_aspect, stratified_kfold_split
 
 
