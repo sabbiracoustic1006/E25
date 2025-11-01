@@ -1026,7 +1026,7 @@ def main() -> None:
         eval_strategy="epoch",
         save_strategy="epoch",
         metric_for_best_model="f0.2",
-        save_total_limit=8,
+        save_total_limit=6,
         greater_is_better=True,
         logging_steps=50,
         load_best_model_at_end=True,
