@@ -313,16 +313,28 @@ class TokenClassifierWithCRF(nn.Module):
 # ---------------------------------------------------------------------------
 
 def print_distribution_report(
-    train_df: pd.DataFrame, valid_df: pd.DataFrame, file_path: str | None = None
+    train_df: pd.DataFrame, valid_df: pd.DataFrame, heldout_df: pd.DataFrame | None = None, file_path: str | None = None
 ) -> None:
     lines: List[str] = []
-    lines.append("=" * 50)
+    lines.append("=" * 80)
     lines.append("DATASET DISTRIBUTION ANALYSIS")
-    lines.append("=" * 50)
+    lines.append("=" * 80)
     lines.append("")
 
     lines.append("1. CATEGORY DISTRIBUTION:")
-    lines.append("-" * 30)
+    lines.append("-" * 50)
+
+    # Held-out distribution
+    if heldout_df is not None:
+        heldout_cat = heldout_df.groupby("Record Number")["Category"].first().value_counts()
+        heldout_n = heldout_df["Record Number"].nunique()
+        lines.append(f"Held-out set categories (unique records: {heldout_n}):")
+        for cat, cnt in heldout_cat.items():
+            pct = cnt / heldout_n * 100
+            lines.append(f"  {cat}: {cnt} records ({pct:.1f}%)")
+        lines.append("")
+
+    # Training distribution
     train_cat = train_df.groupby("Record Number")["Category"].first().value_counts()
     train_n = train_df["Record Number"].nunique()
     lines.append(f"Training set categories (unique records: {train_n}):")
@@ -331,6 +343,7 @@ def print_distribution_report(
         lines.append(f"  {cat}: {cnt} records ({pct:.1f}%)")
     lines.append("")
 
+    # Validation distribution
     valid_cat = valid_df.groupby("Record Number")["Category"].first().value_counts()
     valid_n = valid_df["Record Number"].nunique()
     lines.append(f"Validation set categories (unique records: {valid_n}):")
@@ -340,7 +353,19 @@ def print_distribution_report(
     lines.append("")
 
     lines.append("2. ASPECT NAME DISTRIBUTION — by occurrence")
-    lines.append("-" * 40)
+    lines.append("-" * 50)
+
+    # Held-out aspect distribution
+    if heldout_df is not None:
+        heldout_aspect_inst = heldout_df["Aspect Name"].value_counts()
+        heldout_inst_n = heldout_aspect_inst.sum()
+        lines.append(f"Held-out set aspect mentions (total: {heldout_inst_n}):")
+        for asp, cnt in heldout_aspect_inst.items():
+            pct = cnt / heldout_inst_n * 100
+            lines.append(f"  {asp}: {cnt} mentions ({pct:.1f}%)")
+        lines.append("")
+
+    # Training aspect distribution
     train_aspect_inst = train_df["Aspect Name"].value_counts()
     train_inst_n = train_aspect_inst.sum()
     lines.append(f"Training set aspect mentions (total: {train_inst_n}):")
@@ -349,6 +374,7 @@ def print_distribution_report(
         lines.append(f"  {asp}: {cnt} mentions ({pct:.1f}%)")
     lines.append("")
 
+    # Validation aspect distribution
     valid_aspect_inst = valid_df["Aspect Name"].value_counts()
     valid_inst_n = valid_aspect_inst.sum()
     lines.append(f"Validation set aspect mentions (total: {valid_inst_n}):")
@@ -356,6 +382,8 @@ def print_distribution_report(
         pct = cnt / valid_inst_n * 100
         lines.append(f"  {asp}: {cnt} mentions ({pct:.1f}%)")
     lines.append("")
+
+    lines.append("=" * 80)
 
     report = "\n".join(lines)
     print(report)
@@ -822,6 +850,11 @@ def main() -> None:
     valid_df = df_with_folds[df_with_folds["fold"] == args.fold]
     print("Unique Record Numbers in training data:", len(train_df["Record Number"].unique()))
     print("Unique Record Numbers in validation data:", len(valid_df["Record Number"].unique()))
+    print("")
+
+    # Print distribution report before loading relabeled data
+    print_distribution_report(train_df, valid_df, df_heldout)
+    print("")
 
     # Get record IDs from the fold-based train split
     train_record_ids_from_fold = train_df["Record Number"].unique()
