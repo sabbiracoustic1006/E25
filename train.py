@@ -869,6 +869,7 @@ def main() -> None:
         push_to_hub=False,
         label_smoothing_factor=args.label_smoothing,
         run_name=f"o_weight_{weight_tag}",
+        report_to="none",
     )
 
     print("Training configuration:")

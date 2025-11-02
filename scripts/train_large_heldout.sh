@@ -4,11 +4,11 @@ set -euo pipefail
 # Configuration
 readonly MODEL_ID="microsoft/deberta-v3-large"
 readonly MODEL_SLUG="deberta-v3-large"
-readonly LR="1e-4"
-readonly LR_SLUG="1_e_neg_4"
+readonly LR="3e-5"
+readonly LR_SLUG="3_e_neg_5"
 readonly O_WEIGHT="1.0"
 readonly O_WEIGHT_SLUG="1"
-readonly HELDOUT_RATIO="0.2"  # 15% held-out set
+readonly HELDOUT_RATIO="0.2"  # 20% held-out set
 
 # Paths
 readonly DATA_ROOT="/home/sahmed9/codes/E25"
@@ -56,7 +56,7 @@ for fold in {0..4}; do
   for epoch in 5 6 7; do
     # Determine checkpoint directory based on epoch
     # Assuming 125 steps per epoch (adjust if needed based on your training)
-    step=$((epoch * 125))
+    step=$((epoch * 100))
     CHECKPOINT_DIR="${FOLD_OUTPUT_DIR}/checkpoint-${step}"
 
     if [ ! -d "${CHECKPOINT_DIR}" ]; then
@@ -70,7 +70,7 @@ for fold in {0..4}; do
 
     # Refine thresholds with category-wise optimization
     echo "Step 1/2: Refining category-wise thresholds for epoch ${epoch}..."
-    CUDA_VISIBLE_DEVICES=0 python refine_thresholds.py \
+    CUDA_VISIBLE_DEVICES=0 python refine_thresholds_with_heldout.py \
       --model_dir "${CHECKPOINT_DIR}" \
       --fold ${fold} \
       --device cuda:0 \

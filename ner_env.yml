@@ -73,7 +73,6 @@ dependencies:
       - feedparser==6.0.11
       - filelock==3.15.4
       - fire==0.6.0
-      - flash-attn==2.7.4.post1
       - fonttools==4.53.1
       - fqdn==1.5.1
       - frozenlist==1.4.1
@@ -187,7 +186,6 @@ dependencies:
       - ptyprocess==0.7.0
       - pure-eval==0.2.2
       - py-cpuinfo==9.0.0
-      - pyairports==2.1.1
       - pyarrow==17.0.0
       - pyarrow-hotfix==0.6
       - pycountry==24.6.1
@@ -207,7 +205,6 @@ dependencies:
       - pyzmq==26.0.3
       - qtconsole==5.5.2
       - qtpy==2.4.1
-      - quant-cuda==0.0.0
       - ray==2.34.0
       - referencing==0.35.1
       - regex==2024.5.15
@@ -250,7 +247,7 @@ dependencies:
       - tomli==2.0.1
       - torch==2.5.0
       - torchcrf==1.1.0
-      - torchvision==0.19.0
+      - torchvision==0.20.0
       - tornado==6.4.1
       - tqdm==4.66.4
       - traitlets==5.14.3
@@ -265,8 +262,6 @@ dependencies:
       - urllib3==2.2.2
       - uvicorn==0.30.5
       - uvloop==0.19.0
-      - vllm==0.5.4
-      - vllm-flash-attn==2.6.1
       - wandb==0.17.4
       - watchfiles==0.23.0
       - wcwidth==0.2.13
@@ -276,7 +271,6 @@ dependencies:
       - websockets==12.0
       - werkzeug==3.0.3
       - widgetsnbextension==4.0.11
-      - xformers==0.0.27.post2
       - xgboost==3.0.5
       - xxhash==3.4.1
       - yarl==1.9.4
