@@ -40,20 +40,20 @@ for fold in {0..4}; do
   echo "=== Training fold ${fold} with held-out set ==="
 
   # Train model for this fold with held-out set
-  CUDA_VISIBLE_DEVICES=0 python train_with_heldout.py \
-    --model_id "${MODEL_ID}" \
-    --o_label_weight "${O_WEIGHT}" \
-    --learning_rate "${LR}" \
-    --fold ${fold} \
-    --heldout_ratio ${HELDOUT_RATIO} \
-    --output_dir "${OUTPUT_BASE}"
+  # CUDA_VISIBLE_DEVICES=0 python train_with_heldout.py \
+  #   --model_id "${MODEL_ID}" \
+  #   --o_label_weight "${O_WEIGHT}" \
+  #   --learning_rate "${LR}" \
+  #   --fold ${fold} \
+  #   --heldout_ratio ${HELDOUT_RATIO} \
+  #   --output_dir "${OUTPUT_BASE}"
 
   echo ""
   echo "=== Processing multiple epochs for fold ${fold} ==="
   echo ""
 
   # Process epochs 5, 6, 7, 8, 9
-  for epoch in 5 6 7; do
+  for epoch in 10; do
     # Determine checkpoint directory based on epoch
     # Assuming 125 steps per epoch (adjust if needed based on your training)
     step=$((epoch * 100))

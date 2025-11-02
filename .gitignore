@@ -1,3 +1,4 @@
 __pycache__/
 multi_epoch_checkpoints_heldout/
 wandb/
+data/Listing_Titles.tsv

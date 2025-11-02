@@ -150,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.2,
         help="Ratio of data to hold out for final testing (0.0-0.5, default: 0.0). Uses stratified split.",
     )
+    parser.add_argument(
+        "--relabel_path",
+        type=str,
+        default="relabeled/relabeled_any_one.tsv",
+        help="Path to relabeled training data TSV file (default: relabeled/relabeled_any_one.tsv)",
+    )
     return parser
 
 
@@ -861,7 +867,7 @@ def main() -> None:
 
     # Load relabeled data and filter by the fold's record IDs
     train_df = pd.read_csv(
-        "relabeled/relabeled_any_one.tsv",
+        args.relabel_path,
         sep="\t",
         dtype=str,
         keep_default_na=False,

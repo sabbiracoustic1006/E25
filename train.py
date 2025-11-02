@@ -144,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
             "100%% on true label for B-O/I-O/O labels"
         ),
     )
+    parser.add_argument(
+        "--relabel_path",
+        type=str,
+        default="relabeled/relabeled_any_one.tsv",
+        help="Path to relabeled training data TSV file (default: relabeled/relabeled_any_one.tsv)",
+    )
     return parser
 
 
@@ -717,7 +723,7 @@ def main() -> None:
 
     # Load relabeled data and filter by the fold's record IDs
     train_df = pd.read_csv(
-        "relabeled/relabeled_any_one.tsv",
+        args.relabel_path,
         sep="\t",
         dtype=str,
         keep_default_na=False,
