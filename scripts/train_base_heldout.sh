@@ -40,7 +40,7 @@ for fold in {0..4}; do
   echo "=== Training fold ${fold} with held-out set ==="
 
   # Train model for this fold with held-out set
-  CUDA_VISIBLE_DEVICES=0 python train_with_heldout.py \
+  CUDA_VISIBLE_DEVICES=2 python train_with_heldout.py \
     --model_id "${MODEL_ID}" \
     --o_label_weight "${O_WEIGHT}" \
     --learning_rate "${LR}" \
@@ -56,7 +56,7 @@ for fold in {0..4}; do
   for epoch in 5 6 7 8 9; do
     # Determine checkpoint directory based on epoch
     # Assuming 125 steps per epoch (adjust if needed based on your training)
-    step=$((epoch * 125))
+    step=$((epoch * 100))
     CHECKPOINT_DIR="${FOLD_OUTPUT_DIR}/checkpoint-${step}"
 
     if [ ! -d "${CHECKPOINT_DIR}" ]; then
@@ -70,7 +70,7 @@ for fold in {0..4}; do
 
     # Refine thresholds with category-wise optimization
     echo "Step 1/2: Refining category-wise thresholds for epoch ${epoch}..."
-    CUDA_VISIBLE_DEVICES=0 python refine_thresholds.py \
+    CUDA_VISIBLE_DEVICES=2 python refine_thresholds_with_heldout.py \
       --model_dir "${CHECKPOINT_DIR}" \
       --fold ${fold} \
       --device cuda:0 \
@@ -79,7 +79,7 @@ for fold in {0..4}; do
 
     # Generate submission with category-wise thresholds
     echo "Step 2/2: Generating submission for epoch ${epoch}..."
-    CUDA_VISIBLE_DEVICES=0 python generate_submission.py \
+    CUDA_VISIBLE_DEVICES=2 python generate_submission.py \
       --model_dir "${CHECKPOINT_DIR}" \
       --threshold_path "${OUTPUT_BASE}/refined_thresholds_categorywise_fold${fold}_epoch${epoch}_heldout.json" \
       --start_idx 5001 \

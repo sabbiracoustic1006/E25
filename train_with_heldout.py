@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--heldout_ratio",
         type=float,
-        default=0.0,
+        default=0.2,
         help="Ratio of data to hold out for final testing (0.0-0.5, default: 0.0). Uses stratified split.",
     )
     return parser
